@@ -1,0 +1,154 @@
+# load packages
+
+library(dada2)
+library(ggplot2)
+library(phyloseq)
+library(scales)
+library(phyloseq); packageVersion("phyloseq")
+library(Biostrings); packageVersion("Biostrings")
+library(RColorBrewer)
+
+# set working directory and path
+setwd("C:/Users/path/to/directory/")
+
+# working directory is set as object called "path", which is used as a variable in the following code
+path <- "C:/Users/path/to/directory/"
+list.files(path)
+list.files(pattern = "\\.gz$")
+
+# Forward and reverse fastq filenames have format: SAMPLENAME_R1_001.fastq and SAMPLENAME_R2_001.fastq
+#make an object with forward reads (fnFs)
+#make an object with reverse reads (fnRs)
+#this can be changed if reads come in a different format
+fnFs <- sort(list.files(path, pattern="_R1_001.fastq", full.names = TRUE))
+fnRs <- sort(list.files(path, pattern="_R2_001.fastq", full.names = TRUE))
+
+# Extract sample names, assuming filenames have format: SAMPLENAME_XXX.fastq
+sample.names <- sapply(strsplit(basename(fnFs), "_"), `[`, 1)
+sample.names
+
+# Place filtered files in filtered/ subdirectory
+filtFs <- file.path(path, "filtered", paste0(sample.names, "_F_filt.fastq.gz"))
+filtRs <- file.path(path, "filtered", paste0(sample.names, "_R_filt.fastq.gz"))
+names(filtFs) <- sample.names
+names(filtRs) <- sample.names
+  
+# Now we will inspect read quality profiles
+# Start by visualizing quality profiles of the forward & reverse reads
+plotQualityProfile(fnFs)
+plotQualityProfile(fnRs)
+
+
+# filter and trim reads based on quality profiles
+out <- filterAndTrim(fnFs, filtFs, fnRs, filtRs, 
+                     truncLen=c(290,210),
+                     trimLeft = c(18,20),
+                     maxN=0, 
+                     maxEE=c(2,2), 
+                     truncQ=2, 
+                     rm.phix=TRUE,
+                     compress=TRUE, 
+                     multithread=FALSE) # On Windows set multithread=FALSE
+
+head(out)
+out
+
+
+# learn errors
+errF <- learnErrors(filtFs, multithread=FALSE, MAX_CONSIST=20) #for my own dataset, I'd like to add MAX_CONSIST=20 if it doesn't find convergence at 10
+errR <- learnErrors(filtFs, multithread=FALSE, MAX_CONSIST=20)
+
+# plot errors
+# you want the grey dots to closely follow the black line!
+plotErrors(errF, nominalQ=TRUE)
+plotErrors(errR, nominalQ=TRUE)
+  
+# make sure convergence reaches 0
+dada2:::checkConvergence(errF)
+dada2:::checkConvergence(errR)
+
+# dereplicate
+derepFs <- derepFastq(filtFs, verbose=TRUE)
+derepRs <- derepFastq(filtRs, verbose=TRUE)
+
+names(derepFs) <- sample.names
+names(derepRs) <- sample.names
+
+# this is where we pick apart unique sequences
+dadaFs <- dada(derepFs, err=errF, multithread=FALSE)
+dadaRs <- dada(derepRs, err=errR, multithread=FALSE)
+
+dadaFs[[1]]
+
+# merge paired end reads
+mergers <- mergePairs(dadaFs, derepFs, dadaRs, derepRs, verbose=TRUE)
+
+head(mergers[[1]])
+
+# construct seq table with ASVs
+seqtab <- makeSequenceTable(mergers)
+dim(seqtab)
+
+# inspect distibution of sequence lengths
+table(nchar(getSequences(seqtab)))
+
+# remove chimeras
+seqtab.nochim <- removeBimeraDenovo(seqtab, method="consensus", multithread=FALSE, verbose=TRUE)
+dim(seqtab.nochim)
+sum(seqtab.nochim)/sum(seqtab)
+
+# The seqtab.nochim is a table with ASV seq and the count of how many times it occured
+# We would like to transpose it to be handy for later (so that ASVs are in rows, and samples are in headers)
+# This transposes the seqtab.nochim data if you want to look at it as a column
+flipped_seqtab.nochim <- as.data.frame(t(seqtab.nochim))
+
+# Can now just look at the reads that made it through each step in our pipeline.
+getN <- function(x) sum(getUniques(x))
+track <- cbind(out, sapply(dadaFs, getN), sapply(dadaRs, getN), sapply(mergers, getN), rowSums(seqtab.nochim))
+
+colnames(track) <- c("input", "filtered", "denoisedF", "denoisedR", "merged", "nonchim")
+rownames(track) <- sample.names
+head(track)
+
+# save everything as CSVs
+write.csv(seqtab.nochim, file="seqtab_nochim.csv")
+write.csv(flipped_seqtab.nochim, file="flipped_seqtab_nochim.csv")
+
+  
+## OKAY ITS TIME TO GET TAXA!! :)
+# use Silva database
+taxa <- assignTaxonomy(seqtab.nochim, "C:/Users/path/to/silva_nr99_v138.1_train_set.fa.gz", multithread=TRUE)
+
+taxa.print <- taxa # Removing sequence rownames for display only
+rownames(taxa.print) <- NULL
+head(taxa.print)
+
+# more convenient format to work with
+OTUabund<-cbind(flipped_seqtab.nochim, taxa_species)
+# this saves your flipped seqtab no chim file with your taxa data as one data sheet
+
+# and save
+write.csv(taxa, file="taxa.csv")
+write.csv(OTUabund, file="OTUabund.csv")
+
+# now we will transform our abundances to relative abundances and then save as a table thats super convenient to work with
+
+# make a phyloseq object
+ps <- phyloseq(otu_table(seqtab.nochim, taxa_are_rows=FALSE),
+               tax_table(taxa_species))
+
+dna <- Biostrings::DNAStringSet(taxa_names(ps))
+names(dna) <- taxa_names(ps)
+ps <- merge_phyloseq(ps, dna)
+taxa_names(ps) <- paste0("ASV", seq(ntaxa(ps)))
+ps
+
+# transform data to plot relative abundance
+relative<- transform_sample_counts(ps, function(OTU) OTU/sum(OTU))
+relative
+
+# make taxa abundance table!
+taxa_abundance_table <- psmelt(relative)
+
+# this taxa abundance table is the main file we will work with when plotting our data
+write.csv(taxa_abundance_table, file="taxa_abundance_table.csv")
