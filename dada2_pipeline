@@ -1,12 +1,7 @@
 # load packages
-
 library(dada2)
-library(ggplot2)
 library(phyloseq)
-library(scales)
-library(phyloseq); packageVersion("phyloseq")
 library(Biostrings); packageVersion("Biostrings")
-library(RColorBrewer)
 
 # set working directory and path
 setwd("C:/Users/path/to/directory/")
