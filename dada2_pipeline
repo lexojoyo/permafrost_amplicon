@@ -1,4 +1,4 @@
-# load packages
+# load packages in R
 library(dada2)
 library(phyloseq)
 library(Biostrings); packageVersion("Biostrings")
